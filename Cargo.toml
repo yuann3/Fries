@@ -9,3 +9,6 @@ winit = "0.30.11"
 pixels = "0.15.0"
 rand = "0.9.1"
 rodio = "0.20.1"
+
+[dev-dependencies]
+tempfile = "3.8"

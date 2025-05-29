@@ -147,6 +147,23 @@ mod test {
     }
 
     #[test]
+    fn test_rom_loading() {
+        let dummy_rom = vec![0xA2, 0x2A, 0x60, 0x0C, 0x61, 0x08];
+
+        use std::io::Write;
+        let mut temp_file = tempfile::NamedTempFile::new().unwrap();
+        temp_file.write_all(&dummy_rom).unwrap();
+
+        let mut chip8 = Chip8::new();
+        chip8.load_rom(temp_file.path().to_str().unwrap()).unwrap();
+
+        let start = START_ADDRESS as usize;
+        for (i, &expected) in dummy_rom.iter().enumerate() {
+            assert_eq!(chip8.memory[start + i], expected);
+        }
+    }
+
+    #[test]
     fn test_random_byte_generation() {
         let mut chip8 = Chip8::new();
 
