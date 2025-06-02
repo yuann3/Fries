@@ -30,7 +30,7 @@ impl Platform {
             let size = LogicalSize::new(640.0, 320.0);
             Arc::new(
                 WindowBuilder::new()
-                    .with_title("CHIP-8 Emulator")
+                    .with_title("FRIES-8")
                     .with_inner_size(size)
                     .with_min_inner_size(size)
                     .build(&event_loop)?
