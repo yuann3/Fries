@@ -51,6 +51,7 @@ pub struct Chip8 {
     video: [u32; VIDEO_SIZE],
     opcode: u16,
     rng: StdRng,
+    debug: bool,
 }
 
 #[allow(dead_code)]
@@ -74,11 +75,21 @@ impl Chip8 {
                     .unwrap()
                     .as_nanos() as u64,
             ),
+            debug: true, // Enable debug output initially
         };
 
         chip8.load_fontset();
-
         chip8
+    }
+
+    pub fn enable_debug(&mut self, enabled: bool) {
+        self.debug = enabled;
+    }
+
+    fn debug_print(&self, message: &str) {
+        if self.debug {
+            println!("DEBUG: {}", message);
+        }
     }
 
     fn load_fontset(&mut self) {
@@ -86,6 +97,7 @@ impl Chip8 {
         for (i, &byte) in FONTSET.iter().enumerate() {
             self.memory[start + i] = byte;
         }
+        self.debug_print(&format!("Loaded fontset at 0x{:03X}", start));
     }
 
     pub fn load_rom(&mut self, filename: &str) -> Result<()> {
@@ -100,6 +112,7 @@ impl Chip8 {
             self.memory[start + i] = byte;
         }
 
+        self.debug_print(&format!("Loaded ROM: {} bytes at 0x{:03X}", rom_data.len(), start));
         Ok(())
     }
 
@@ -117,9 +130,17 @@ impl Chip8 {
 
     // Fetch -> Decode -> Execute
     pub fn cycle(&mut self) {
+        // Check if PC is in valid range
+        if (self.pc as usize) >= MEMORY_SIZE - 1 {
+            self.debug_print(&format!("PC out of bounds: 0x{:03X}", self.pc));
+            return;
+        }
+
         let high_byte = self.memory[self.pc as usize] as u16;
         let low_byte = self.memory[(self.pc + 1) as usize] as u16;
         self.opcode = (high_byte << 8) | low_byte;
+
+        self.debug_print(&format!("PC: 0x{:03X}, Opcode: 0x{:04X}", self.pc, self.opcode));
 
         self.pc += 2;
 
@@ -165,7 +186,7 @@ impl Chip8 {
     }
 
     fn execute_8xxx(&mut self) {
-        match self.opcode & 0x00FF {
+        match self.opcode & 0x000F { // Fixed: should check last nibble, not last byte
             0x0 => self.op_8xy0(), // LD Vx, Vy
             0x1 => self.op_8xy1(), // OR Vx, Vy
             0x2 => self.op_8xy2(), // AND Vx, Vy
@@ -209,31 +230,34 @@ impl Chip8 {
     }
 
     // ===== INSTRUCTIONS =====
-    // here is all the implementation of instructions
 
     // 00E0: CLS Clear the display.
     fn op_00e0(&mut self) {
-        self.video = [0; VIDEO_SIZE]
+        self.video = [0; VIDEO_SIZE];
+        self.debug_print("Cleared display");
     }
 
     // 00EE: RET Return from a subroutine.
     fn op_00ee(&mut self) {
         self.sp -= 1;
         self.pc = self.stack[self.sp as usize];
+        self.debug_print(&format!("RET to 0x{:03X}", self.pc));
     }
 
     // 1nnn: JP addr Jump to location nnn.
     fn op_1nnn(&mut self) {
         let address = self.opcode & 0x0FFF;
+        self.debug_print(&format!("JP to 0x{:03X}", address));
         self.pc = address;
     }
 
-    // 2nnn: JP addr Jump to location nnn.
+    // 2nnn: CALL addr Call subroutine at nnn.
     fn op_2nnn(&mut self) {
         let address = self.opcode & 0x0FFF;
         self.stack[self.sp as usize] = self.pc;
         self.sp += 1;
         self.pc = address;
+        self.debug_print(&format!("CALL 0x{:03X}", address));
     }
 
     // 3xkk - SE Vx, byte Skip next instruction if Vx = kk.
@@ -243,27 +267,34 @@ impl Chip8 {
 
         if self.registers[vx] == byte {
             self.pc += 2;
+            self.debug_print(&format!("SE V{:X}, 0x{:02X} - SKIP", vx, byte));
+        } else {
+            self.debug_print(&format!("SE V{:X}, 0x{:02X} - NO SKIP", vx, byte));
         }
     }
 
-    // 4xkk - SE Vx, byte Skip next instruction if Vx != kk.
+    // 4xkk - SNE Vx, byte Skip next instruction if Vx != kk.
     fn op_4xkk(&mut self) {
         let vx = ((self.opcode & 0x0F00) >> 8) as usize;
         let byte = (self.opcode & 0x00FF) as u8;
 
         if self.registers[vx] != byte {
             self.pc += 2;
+            self.debug_print(&format!("SNE V{:X}, 0x{:02X} - SKIP", vx, byte));
+        } else {
+            self.debug_print(&format!("SNE V{:X}, 0x{:02X} - NO SKIP", vx, byte));
         }
     }
 
     // 5xy0 - SE Vx, Vy Skip next instruction if Vx = Vy.
     fn op_5xy0(&mut self) {
         let vx = ((self.opcode & 0x0F00) >> 8) as usize;
-        let vy = ((self.opcode & 0x0F00) >> 4) as usize;
+        let vy = ((self.opcode & 0x00F0) >> 4) as usize;
 
         if self.registers[vx] == self.registers[vy] {
             self.pc += 2;
         }
+        self.debug_print(&format!("SE V{:X}, V{:X}", vx, vy));
     }
 
     // 6xkk - LD Vx, byte, Set Vx = kk.
@@ -272,14 +303,16 @@ impl Chip8 {
         let byte = (self.opcode & 0x00FF) as u8;
 
         self.registers[vx] = byte;
+        self.debug_print(&format!("LD V{:X}, 0x{:02X}", vx, byte));
     }
 
-    // 7xkk - LD Vx, byte, Set Vx + kk.
+    // 7xkk - ADD Vx, byte, Set Vx = Vx + kk.
     fn op_7xkk(&mut self) {
         let vx = ((self.opcode & 0x0F00) >> 8) as usize;
         let byte = (self.opcode & 0x00FF) as u8;
 
         self.registers[vx] = self.registers[vx].wrapping_add(byte);
+        self.debug_print(&format!("ADD V{:X}, 0x{:02X}", vx, byte));
     }
 
     // 8xy0 - LD Vx, Vy, Set Vx = Vy.
@@ -287,31 +320,35 @@ impl Chip8 {
         let vx = ((self.opcode & 0x0F00) >> 8) as usize;
         let vy = ((self.opcode & 0x00F0) >> 4) as usize;
 
-        self.registers[vx] = self.registers[vy]
+        self.registers[vx] = self.registers[vy];
+        self.debug_print(&format!("LD V{:X}, V{:X}", vx, vy));
     }
 
-    // 8xy1 - LD Vx, Vy, Set Vx OR Vy.
+    // 8xy1 - OR Vx, Vy, Set Vx = Vx OR Vy.
     fn op_8xy1(&mut self) {
         let vx = ((self.opcode & 0x0F00) >> 8) as usize;
         let vy = ((self.opcode & 0x00F0) >> 4) as usize;
 
-        self.registers[vx] |= self.registers[vy]
+        self.registers[vx] |= self.registers[vy];
+        self.debug_print(&format!("OR V{:X}, V{:X}", vx, vy));
     }
 
-    // 8xy2 - LD Vx, Vy, Set Vx OR Vy.
+    // 8xy2 - AND Vx, Vy, Set Vx = Vx AND Vy.
     fn op_8xy2(&mut self) {
         let vx = ((self.opcode & 0x0F00) >> 8) as usize;
         let vy = ((self.opcode & 0x00F0) >> 4) as usize;
 
-        self.registers[vx] &= self.registers[vy]
+        self.registers[vx] &= self.registers[vy];
+        self.debug_print(&format!("AND V{:X}, V{:X}", vx, vy));
     }
 
-    // 8xy3 - LD Vx, Vy, Set Vx OR Vy.
+    // 8xy3 - XOR Vx, Vy, Set Vx = Vx XOR Vy.
     fn op_8xy3(&mut self) {
         let vx = ((self.opcode & 0x0F00) >> 8) as usize;
         let vy = ((self.opcode & 0x00F0) >> 4) as usize;
 
-        self.registers[vx] ^= self.registers[vy]
+        self.registers[vx] ^= self.registers[vy];
+        self.debug_print(&format!("XOR V{:X}, V{:X}", vx, vy));
     }
 
     // 8xy4 - ADD Vx, Vy, Set Vx = Vx + Vy, set VF = carry.
@@ -322,8 +359,8 @@ impl Chip8 {
         let sum = self.registers[vx] as u16 + self.registers[vy] as u16;
 
         self.registers[0xF] = if sum > 255 { 1 } else { 0 };
-
         self.registers[vx] = (sum & 0xFF) as u8;
+        self.debug_print(&format!("ADD V{:X}, V{:X}", vx, vy));
     }
 
     // 8xy5 - SUB Vx, Vy, Set Vx = Vx - Vy, set VF = NOT borrow.
@@ -338,6 +375,7 @@ impl Chip8 {
         };
 
         self.registers[vx] = self.registers[vx].wrapping_sub(self.registers[vy]);
+        self.debug_print(&format!("SUB V{:X}, V{:X}", vx, vy));
     }
 
     // 8xy6 - SHR Vx, Set Vx = Vx SHR 1.
@@ -345,8 +383,8 @@ impl Chip8 {
         let vx = ((self.opcode & 0x0F00) >> 8) as usize;
 
         self.registers[0xF] = self.registers[vx] & 0x1;
-
         self.registers[vx] >>= 1;
+        self.debug_print(&format!("SHR V{:X}", vx));
     }
 
     // 8xy7 - SUBN Vx, Vy, Set Vx = Vy - Vx, set VF = NOT borrow.
@@ -361,6 +399,7 @@ impl Chip8 {
         };
 
         self.registers[vx] = self.registers[vy].wrapping_sub(self.registers[vx]);
+        self.debug_print(&format!("SUBN V{:X}, V{:X}", vx, vy));
     }
 
     // 8xyE - SHL Vx {, Vy}, Set Vx = Vx SHL 1.
@@ -368,129 +407,33 @@ impl Chip8 {
         let vx = ((self.opcode & 0x0F00) >> 8) as usize;
 
         self.registers[0xF] = (self.registers[vx] & 0x80) >> 7;
-
         self.registers[vx] <<= 1;
-    }
-
-    // Ex9E - SKP Vx, Skip next instruction if key with the value of Vx is pressed.
-    fn op_ex9e(&mut self) {
-        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
-        let key = self.registers[vx] as usize;
-
-        if key < KEY_COUNT && self.keypad[key] {
-            self.pc += 2;
-        }
-    }
-
-    // ExA1 - SKNP Vx, Skip next instruction if key with the value of Vx is not pressed.
-    fn op_exa1(&mut self) {
-        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
-        let key = self.registers[vx] as usize;
-
-        if key >= KEY_COUNT || !self.keypad[key] {
-            self.pc += 2;
-        }
-    }
-
-    // Fx07 - LD Vx, DT, Set Vx = delay timer value.
-    fn op_fx07(&mut self) {
-        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
-
-        self.registers[vx] = self.delay_timer;
-    }
-
-    // Fx0A - LD Vx, K, Wait for a key press, store the value of the key in Vx.
-    fn op_fx0a(&mut self) {
-        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
-
-        for (i, &key_pressed) in self.keypad.iter().enumerate() {
-            if key_pressed {
-                self.registers[vx] = i as u8;
-                return;
-            }
-        }
-
-        self.pc -= 2;
-    }
-
-    // Fx15 - LD DT, Vx, Set delay timer = Vx.
-    fn op_fx15(&mut self) {
-        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
-        self.delay_timer = self.registers[vx];
-    }
-
-    // Fx18 - LD ST, Vx, Set sound timer = Vx.
-    fn op_fx18(&mut self) {
-        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
-        self.sound_timer = self.registers[vx];
-    }
-
-    // Fx1E - ADD I, Vx, Set I = I + Vx.
-    fn op_fx1e(&mut self) {
-        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
-        self.index += self.registers[vx] as u16;
-    }
-
-    // Fx29 - LD F, Vx, Set I = location of sprite for digit Vx.
-    fn op_fx29(&mut self) {
-        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
-        let digit = self.registers[vx] as u16;
-
-        self.index = FONTSET_START_ADDRESS + (5 * digit);
-    }
-
-    // Fx33 - LD B, Vx, Store BCD representation of Vx in memory locations I, I+1, and I+2.
-    fn op_fx33(&mut self) {
-        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
-        let mut value = self.registers[vx];
-
-        self.memory[(self.index + 2) as usize] = value % 10;
-        value /= 10;
-
-        self.memory[(self.index + 1) as usize] = value % 10;
-        value /= 10;
-
-        self.memory[self.index as usize] = value % 10;
-    }
-
-    // Fx55 - LD [I], Vx: Store registers V0 through Vx in memory starting at location I
-    fn op_fx55(&mut self) {
-        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
-
-        for i in 0..=vx {
-            self.memory[(self.index + i as u16) as usize] = self.registers[i];
-        }
-    }
-
-    // Fx65 - LD Vx, [I]: Read registers V0 through Vx from memory starting at location I
-    fn op_fx65(&mut self) {
-        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
-
-        for i in 0..=vx {
-            self.registers[i] = self.memory[(self.index + i as u16) as usize];
-        }
+        self.debug_print(&format!("SHL V{:X}", vx));
     }
 
     // 9xy0 - SNE Vx, Vy, Skip next instruction if Vx != Vy.
     fn op_9xy0(&mut self) {
         let vx = ((self.opcode & 0x0F00) >> 8) as usize;
-        let vy = ((self.opcode & 0x0F00) >> 8) as usize;
+        let vy = ((self.opcode & 0x00F0) >> 4) as usize;
 
         if self.registers[vx] != self.registers[vy] {
             self.pc += 2;
         }
+        self.debug_print(&format!("SNE V{:X}, V{:X}", vx, vy));
     }
 
     // Annn - LD I, addr, Set I = nnn.
     fn op_annn(&mut self) {
         let address = self.opcode & 0x0FFF;
         self.index = address;
+        self.debug_print(&format!("LD I, 0x{:03X}", address));
     }
 
     // Bnnn - JP V0, addr, Jump to location nnn + V0.
     fn op_bnnn(&mut self) {
         let address = self.opcode & 0x0FFF;
         self.pc = address + self.registers[0] as u16;
+        self.debug_print(&format!("JP V0, 0x{:03X}", address));
     }
 
     // Cxkk - RND Vx, byte, Set Vx = random byte AND kk.
@@ -499,6 +442,7 @@ impl Chip8 {
         let byte = (self.opcode & 0x00FF) as u8;
 
         self.registers[vx] = self.random_byte() & byte;
+        self.debug_print(&format!("RND V{:X}, 0x{:02X}", vx, byte));
     }
 
     // Dxyn - DRW Vx, Vy, nibble
@@ -511,10 +455,13 @@ impl Chip8 {
         let x_pos = self.registers[vx] as usize % VIDEO_WIDTH;
         let y_pos = self.registers[vy] as usize % VIDEO_HEIGHT;
 
+        self.debug_print(&format!("DRW V{:X}, V{:X}, {} at ({}, {})", vx, vy, height, x_pos, y_pos));
+
         self.registers[0xF] = 0; // Clear collision flag
 
         for row in 0..height {
             let sprite_byte = self.memory[(self.index + row as u16) as usize];
+            self.debug_print(&format!("  Row {}: 0b{:08b} (0x{:02X})", row, sprite_byte, sprite_byte));
 
             for col in 0..8 {
                 let sprite_pixel = sprite_byte & (0x80 >> col);
@@ -530,6 +477,120 @@ impl Chip8 {
                 self.video[screen_pixel_index] ^= 0xFFFFFFFF;
             }
         }
+
+        // Count pixels that are on for debugging
+        let pixels_on = self.video.iter().filter(|&&p| p == 0xFFFFFFFF).count();
+        self.debug_print(&format!("  Pixels on after draw: {}", pixels_on));
+    }
+
+    // Ex9E - SKP Vx, Skip next instruction if key with the value of Vx is pressed.
+    fn op_ex9e(&mut self) {
+        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
+        let key = self.registers[vx] as usize;
+
+        if key < KEY_COUNT && self.keypad[key] {
+            self.pc += 2;
+        }
+        self.debug_print(&format!("SKP V{:X}", vx));
+    }
+
+    // ExA1 - SKNP Vx, Skip next instruction if key with the value of Vx is not pressed.
+    fn op_exa1(&mut self) {
+        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
+        let key = self.registers[vx] as usize;
+
+        if key >= KEY_COUNT || !self.keypad[key] {
+            self.pc += 2;
+        }
+        self.debug_print(&format!("SKNP V{:X}", vx));
+    }
+
+    // Fx07 - LD Vx, DT, Set Vx = delay timer value.
+    fn op_fx07(&mut self) {
+        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
+        self.registers[vx] = self.delay_timer;
+        self.debug_print(&format!("LD V{:X}, DT", vx));
+    }
+
+    // Fx0A - LD Vx, K, Wait for a key press, store the value of the key in Vx.
+    fn op_fx0a(&mut self) {
+        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
+
+        for (i, &key_pressed) in self.keypad.iter().enumerate() {
+            if key_pressed {
+                self.registers[vx] = i as u8;
+                self.debug_print(&format!("LD V{:X}, K (key {})", vx, i));
+                return;
+            }
+        }
+
+        self.pc -= 2;
+        self.debug_print(&format!("LD V{:X}, K (waiting)", vx));
+    }
+
+    // Fx15 - LD DT, Vx, Set delay timer = Vx.
+    fn op_fx15(&mut self) {
+        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
+        self.delay_timer = self.registers[vx];
+        self.debug_print(&format!("LD DT, V{:X}", vx));
+    }
+
+    // Fx18 - LD ST, Vx, Set sound timer = Vx.
+    fn op_fx18(&mut self) {
+        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
+        self.sound_timer = self.registers[vx];
+        self.debug_print(&format!("LD ST, V{:X}", vx));
+    }
+
+    // Fx1E - ADD I, Vx, Set I = I + Vx.
+    fn op_fx1e(&mut self) {
+        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
+        self.index += self.registers[vx] as u16;
+        self.debug_print(&format!("ADD I, V{:X}", vx));
+    }
+
+    // Fx29 - LD F, Vx, Set I = location of sprite for digit Vx.
+    fn op_fx29(&mut self) {
+        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
+        let digit = self.registers[vx] as u16;
+
+        self.index = FONTSET_START_ADDRESS + (5 * digit);
+        self.debug_print(&format!("LD F, V{:X} (digit {}, addr 0x{:03X})", vx, digit, self.index));
+    }
+
+    // Fx33 - LD B, Vx, Store BCD representation of Vx in memory locations I, I+1, and I+2.
+    fn op_fx33(&mut self) {
+        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
+        let mut value = self.registers[vx];
+
+        self.memory[(self.index + 2) as usize] = value % 10;
+        value /= 10;
+
+        self.memory[(self.index + 1) as usize] = value % 10;
+        value /= 10;
+
+        self.memory[self.index as usize] = value % 10;
+        self.debug_print(&format!("LD B, V{:X}", vx));
+    }
+
+    // Fx55 - LD [I], Vx: Store registers V0 through Vx in memory starting at location I
+    fn op_fx55(&mut self) {
+        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
+
+        for i in 0..=vx {
+            self.memory[(self.index + i as u16) as usize] = self.registers[i];
+        }
+        self.debug_print(&format!("LD [I], V{:X}", vx));
+    }
+
+    // Fx65 - LD Vx, [I]: Read registers V0 through Vx from memory starting at location I
+    fn op_fx65(&mut self) {
+        let vx = ((self.opcode & 0x0F00) >> 8) as usize;
+
+        for i in 0..=vx {
+            self.registers[i] = self.memory[(self.index + i as u16) as usize];
+        }
+        self.debug_print(&format!("LD V{:X}, [I]", vx));
     }
 
     // Getter methods for testing
@@ -553,6 +614,15 @@ impl Chip8 {
     }
     pub fn get_sound_timer(&self) -> u8 {
         self.sound_timer
+    }
+    pub fn load_test_program(&mut self, program: &[u8]) {
+        let start = START_ADDRESS as usize;
+        for (i, &byte) in program.iter().enumerate() {
+            if start + i < MEMORY_SIZE {
+                self.memory[start + i] = byte;
+            }
+        }
+        self.debug_print(&format!("Loaded test program: {} bytes", program.len()));
     }
 }
 
@@ -734,21 +804,19 @@ mod test {
         assert_eq!(chip8.index, 0x123);
     }
 
-    // #[test]
-    // fn test_fetch_decode_execute() {
-    //     let mut chip8 = Chip8::new();
+    #[test]
+    fn test_fetch_decode_execute() {
+        let mut chip8 = Chip8::new();
 
-    //     // Place a simple instruction in memory: 6A55 (LD VA, 0x55)
-    //     chip8.memory[0x200] = 0x6A;
-    //     chip8.memory[0x201] = 0x55;
+        // Place a simple instruction in memory: 6A55 (LD VA, 0x55)
+        chip8.memory[0x200] = 0x6A;
+        chip8.memory[0x201] = 0x55;
 
-    //     chip8.cycle();
+        chip8.cycle();
 
-    //     assert_eq!(chip8.registers[0xA], 0x55);
-    //     assert_eq!(chip8.pc, 0x202); // PC should advance
-    // }
-
-    // Tests for 8xxx opcodes
+        assert_eq!(chip8.registers[0xA], 0x55);
+        assert_eq!(chip8.pc, 0x202); // PC should advance
+    }
 
     #[test]
     fn test_op_8xy1_or() {
@@ -1108,5 +1176,29 @@ mod test {
         assert_eq!(chip8.registers[0], 0x10);
         assert_eq!(chip8.registers[1], 0x20);
         assert_eq!(chip8.registers[2], 0x30);
+    }
+
+    #[test]
+    fn test_op_dxyn_draw() {
+        let mut chip8 = Chip8::new();
+
+        // Set up a simple 1x1 sprite (just one byte with all bits set)
+        chip8.index = 0x300;
+        chip8.memory[0x300] = 0xFF; // 11111111 in binary
+
+        // Draw at position (0, 0)
+        chip8.registers[0] = 0; // x position
+        chip8.registers[1] = 0; // y position
+        chip8.opcode = 0xD011; // DRW V0, V1, 1
+
+        chip8.op_dxyn();
+
+        // Check that the first 8 pixels in the first row are set
+        for i in 0..8 {
+            assert_eq!(chip8.video[i], 0xFFFFFFFF);
+        }
+
+        // Check that collision flag is not set (nothing was there before)
+        assert_eq!(chip8.registers[0xF], 0);
     }
 }
